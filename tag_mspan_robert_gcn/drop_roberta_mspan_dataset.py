@@ -7,7 +7,20 @@ import numpy as np
 from word2number.w2n import word_to_num
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict, OrderedDict
+###
+from .chinese_number import *
+from chinese_preprocess import CHPreproc
+import re
 
+def answer_type_info(annotation_list):
+    number_count = np.sum([1 for anno in annotation_list if anno['number'] != ''])
+    unit_count = np.sum([1 for anno in annotation_list if anno['unit'] != ''])
+    yesno_count = np.sum([1 for anno in annotation_list if anno['yesno'] != ''])
+    span_count = np.sum([1 for anno in annotation_list if len(anno['spans'])==1 and anno['spans'][0]!=''])
+    multispan_count = np.sum([1 for anno in annotation_list if len(anno['spans'])>1])
+    info = {'number': number_count, 'unit': unit_count, 'yesno': yesno_count, 'span': span_count, 'multi-span':multispan_count}
+    print('answer_type_info: %s' % str(info))
+    return info
 
 def get_number_from_word(word, improve_number_extraction=True):
     punctuation = string.punctuation.replace('-', '')
@@ -62,8 +75,10 @@ def is_whitespace(c):
         return True
     return False
 
+def debug_number_info(passage_tokens, numbers_in_passage, number_indices, number_len):
+    return str([(num, passage_tokens[idx:idx+leng])for num, idx, leng in zip(numbers_in_passage, number_indices, number_len)])
 
-def roberta_tokenize(text, tokenizer, is_answer=False):
+def roberta_tokenize(text, tokenizer, is_eng, is_answer=False):
     split_tokens = []
     sub_token_offsets = []
 
@@ -77,6 +92,7 @@ def roberta_tokenize(text, tokenizer, is_answer=False):
     word_to_char_offset = []
     prev_is_whitespace = True
     tokens = []
+    
     for i, c in enumerate(text):
         if is_whitespace(c):  # or c in ["-", "–", "~"]:
             prev_is_whitespace = True
@@ -91,20 +107,25 @@ def roberta_tokenize(text, tokenizer, is_answer=False):
             else:
                 tokens[-1] += c
             prev_is_whitespace = False  # char_to_word_offset.append(len(tokens) - 1)
-
+    
+    # should_pdb = False
     for i, token in enumerate(tokens):
         index = word_to_char_offset[i]
-        if i != 0 or is_answer:
-            sub_tokens = tokenizer._tokenize(" " + token)
+        ###
+        if is_eng:
+            if i != 0 or is_answer:
+                sub_tokens = tokenizer._tokenize(" " + token)
+            else:
+                sub_tokens = tokenizer._tokenize(token)
+            token_number = get_number_from_word(token)
         else:
             sub_tokens = tokenizer._tokenize(token)
-        token_number = get_number_from_word(token)
-
+            token_number = get_number_from_word_zh(token)
+        ###   
         if token_number is not None:
             numbers.append(token_number)
             number_indices.append(len(split_tokens))
             number_len.append(len(sub_tokens))
-
         for sub_token in sub_tokens:
             split_tokens.append(sub_token)
             sub_token_offsets.append((index, index + len(token)))
@@ -112,8 +133,12 @@ def roberta_tokenize(text, tokenizer, is_answer=False):
         word_piece_mask += [1]
         if len(sub_tokens) > 1:
             word_piece_mask += [0] * (len(sub_tokens) - 1)
-
+    # if should_pdb:
+    #     import pdb; pdb.set_trace()
     assert len(split_tokens) == len(sub_token_offsets)
+    # print('word_piece_mask [True] = %s' % str([split_tokens[i] if v != 0 else '___' for i, v in enumerate(word_piece_mask) ]))
+    # print('word_piece_mask [False] = %s' % str([split_tokens[i] if v == 0 else '+++' for i, v in enumerate(word_piece_mask)]))
+    # import pdb; pdb.set_trace()
     return split_tokens, sub_token_offsets, numbers, number_indices, number_len, word_piece_mask
 
 
@@ -151,17 +176,11 @@ def whitespace_tokenize(text):
     tokens = [token.strip(STRIPPED_CHARACTERS) for token in tokens]
     return tokens
 
-WORD_NUMBER_MAP = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
-                   "five": 5, "six": 6, "seven": 7, "eight": 8,
-                   "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
-                   "thirteen": 13, "fourteen": 14, "fifteen": 15,
-                   "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19}
-
 class DropReader(object):
     def __init__(self, tokenizer,
                  passage_length_limit: int = None, question_length_limit: int = None,
                  skip_when_all_empty: List[str] = None, instance_format: str = "drop",
-                 relaxed_span_match_for_finding_labels: bool = True) -> None:
+                 relaxed_span_match_for_finding_labels: bool = True, is_eng: bool = True) -> None:
         self.max_pieces = 512
         self._tokenizer = tokenizer
         self.passage_length_limit = passage_length_limit
@@ -173,14 +192,16 @@ class DropReader(object):
         self.instance_format = instance_format
         self.relaxed_span_match_for_finding_labels = relaxed_span_match_for_finding_labels
         self.flexibility_threshold = 1000
+        self.is_eng = is_eng
 
     def _read(self, file_path: str):
         # if `file_path` is a URL, redirect to the cache
         file_path = cached_path(file_path)
         print("Reading file at %s", file_path)
-        with open(file_path) as dataset_file:
+        with open(file_path, encoding='utf-8') as dataset_file:
             dataset = json.load(dataset_file)
         print("Reading the dataset")
+        anno_list = []
         instances, skip_count = [], 0
         for passage_id, passage_info in tqdm(dataset.items()):
             passage_text = passage_info["passage"]
@@ -196,29 +217,49 @@ class DropReader(object):
                 instance = self.text_to_instance(question_text, passage_text, question_id, passage_id,
                                                  answer_annotations)
                 if instance is not None:
+                    anno_list.append(answer_annotations[0])
                     instances.append(instance)
                 else:
                     skip_count += 1
         print(f"Skipped {skip_count} questions, kept {len(instances)} questions.")
+        answer_type_info(anno_list)
         return instances
 
     def text_to_instance(self,
                          question_text: str, passage_text: str,
                          question_id: str, passage_id: str,
                          answer_annotations):
-        passage_text = " ".join(whitespace_tokenize(passage_text))
-        question_text = " ".join(whitespace_tokenize(question_text))
+        ### 
+        ### whitespace_tokenize
+        ###     'How many field goals did the Lions score?' -> ['how', 'many', 'field', 'goals', 'did', 'the', 'lions', 'score']
+        ### 以space來分隔tokens, 並且去掉特殊符號
+        ###     特殊符號 = string.punctuation + ''.join([u"‘", u"’", u"´", u"`", "_"])
+        if self.is_eng:
+            passage_text = " ".join(whitespace_tokenize(passage_text))
+            question_text = " ".join(whitespace_tokenize(question_text))
+        else:
+            ### 對文章的特殊處理在這做完
+            ###     在 roberta_tokenize(...) 內不可以改內文 否則後面在index從passage_text抓文字時就會抓錯
+            passage_text = CHPreproc._lower_and_white_spacing(CHPreproc._remove_punc(passage_text))
+            question_text = CHPreproc._lower_and_white_spacing(CHPreproc._remove_punc(question_text))
 
         passage_tokens, passage_offset, numbers_in_passage, number_indices, number_len, passage_wordpiece_mask =  \
-            roberta_tokenize(passage_text, self._tokenizer)
+            roberta_tokenize(passage_text, self._tokenizer, is_eng=self.is_eng)
         question_tokens, question_offset, numbers_in_question, question_number_indices, question_number_len, question_wordpiece_mask = \
-            roberta_tokenize(question_text, self._tokenizer)
+            roberta_tokenize(question_text, self._tokenizer, is_eng=self.is_eng)
         question_tokens = question_tokens[:self.question_length_limit]
         question_number_indices, question_number_len, numbers_in_question = clipped_passage_num(
             question_number_indices, question_number_len, numbers_in_question, len(question_tokens)
         )
+        # print('passage: '+debug_number_info(passage_tokens, numbers_in_passage, number_indices, number_len))
+        # import pdb; pdb.set_trace()
+        
+        '''
+            這邊可以寫個程式 確認 passage_tokens, passage_offset 是有對應的
+                -> tokenize(passage_text[passage_offset[i]]) == passage_tokens[i]
+        '''
 
-        qp_tokens = ["<s>"] + question_tokens + ["</s>"] + passage_tokens
+        qp_tokens = ["[CLS]"] + question_tokens + ["[SEP]"] + passage_tokens
         qp_wordpiece_mask = [1] + question_wordpiece_mask + [1] + passage_wordpiece_mask
         q_len = len(question_tokens)
         if len(qp_tokens) > self.max_pieces - 1:
@@ -229,22 +270,37 @@ class DropReader(object):
             number_indices, number_len, numbers_in_passage = clipped_passage_num(number_indices, number_len,
                                                                                  numbers_in_passage, plen)
             qp_wordpiece_mask = qp_wordpiece_mask[:self.max_pieces - 1]
-        qp_tokens += ["</s>"]
+        qp_tokens += ["[SEP]"]
         qp_wordpiece_mask += [1]
 
         answer_type: str = None
         answer_texts: List[str] = []
+
+        if answer_annotations[0] == "":
+            return None
+
+        if len(answer_annotations) == 0:
+            return None
+
+        if "spans" not in answer_annotations[0].keys():
+            return None
+
         if answer_annotations:
             # Currently we only use the first annotated answer here, but actually this doesn't affect
             # the training, because we only have one annotation for the train set.
-            answer_type, answer_texts = self.extract_answer_info_from_annotation(answer_annotations[0])
+            answer_type, answer_texts = self.extract_answer_info_from_annotation(answer_annotations[0], is_eng=self.is_eng)
             answer_texts = [" ".join(whitespace_tokenize(answer_text)) for answer_text in answer_texts]
 
+            if answer_type is None or len(answer_texts) == 0:
+                ### print("Skipped instance: %s" % (str(answer_annotations)))
+                ### import pdb; pdb.set_trace()
+                return None
+            
         # Tokenize the answer text in order to find the matched span based on token
         tokenized_answer_texts = []
         specific_answer_type = "single_span"
         for answer_text in answer_texts:
-            answer_tokens, _, _, _, _, _ = roberta_tokenize(answer_text, self._tokenizer, True)
+            answer_tokens, _, _, _, _, _ = roberta_tokenize(answer_text, self._tokenizer, is_eng=self.is_eng, is_answer=True)
             if answer_type in ["span", "spans"]:
                 answer_texts = list(OrderedDict.fromkeys(answer_texts))
             if answer_type == "spans" and len(answer_texts) > 1:
@@ -301,6 +357,13 @@ class DropReader(object):
             question_number_order = np.array(question_number_order)
 
             numbers_as_tokens = [str(number) for number in numbers_in_passage]
+
+            if tokenized_answer_texts == '' or tokenized_answer_texts is None:
+                return None
+                # print('tokenized_answer_texts: '+str(tokenized_answer_texts))
+                # import pdb; pdb.set_trace()
+            if len(tokenized_answer_texts)==1 and tokenized_answer_texts[0] == '':
+                return None
 
             valid_passage_spans = self.find_valid_spans(passage_tokens,
                                                         tokenized_answer_texts) if tokenized_answer_texts else []
@@ -403,6 +466,7 @@ class DropReader(object):
                            "signs_for_add_sub_expressions": valid_signs_for_add_sub_expressions, "counts": valid_counts,
                            "multi_span": multi_span}
 
+            # import pdb; pdb.set_trace()
             return self.make_marginal_drop_instance(question_tokens,
                                                     passage_tokens,
                                                     qp_tokens,
@@ -427,14 +491,20 @@ class DropReader(object):
                              f"but got {self.instance_format}")
 
     @staticmethod
-    def extract_answer_info_from_annotation(answer_annotation: Dict[str, Any]) -> Tuple[str, List[str]]:
+    def extract_answer_info_from_annotation(answer_annotation: Dict[str, Any], is_eng) -> Tuple[str, List[str]]:
         answer_type = None
         if answer_annotation["spans"]:
             answer_type = "spans"
         elif answer_annotation["number"]:
             answer_type = "number"
-        elif any(answer_annotation["date"].values()):
-            answer_type = "date"
+        else: 
+            '''
+                Currently chinese don't support "date"
+            '''
+            if not is_eng:
+                answer_type = None
+            elif any(answer_annotation["date"].values()):
+                answer_type = "date"
 
         answer_content = answer_annotation[answer_type] if answer_type is not None else None
 

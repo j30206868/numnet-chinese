@@ -5,9 +5,10 @@ set -xe
 DATA_PATH=$1
 DUMP_PATH=$2
 TMSPAN=$3
+English=0
 PRE_PATH=model.pt
 
-BERT_CONFIG="--roberta_model drop_dataset/roberta.large"
+BERT_CONFIG="--roberta_model dataset_zh/roberta_zh.base"
 
 if [ ${TMSPAN} == tag_mspan ]; then
   echo "Use tag_mspan model..."
@@ -24,4 +25,5 @@ TEST_CONFIG="--eval_batch_size 1 --pre_path ${PRE_PATH} --data_mode dev --dump_p
 python roberta_predict.py \
     ${TEST_CONFIG} \
     ${BERT_CONFIG} \
-    ${MODEL_CONFIG}
+    ${MODEL_CONFIG} \
+    --eng ${English}

@@ -48,7 +48,7 @@ class MultiSpanHead(Module):
         for i in np.arange(len(question_passage_tokens)):
             token = question_passage_tokens[i]
 
-            if token.text == '</s>':
+            if token.text == '[SEP]':
                 context = 'p'
 
             # If it is the same word so just add it to current tokens
@@ -368,7 +368,7 @@ def validate_tokens_spans(spans_tokens):
     for context, tokens in spans_tokens:
         tokens_text = [token.text for token in tokens]
 
-        if '<s>' in tokens_text or '</s>' in tokens_text:
+        if '[CLS]' in tokens_text or '[SEP]' in tokens_text:
             invalid_tokens.append(tokens)
         else:
             valid_tokens.append((context, tokens))
@@ -388,7 +388,7 @@ def decode_token_spans(spans_tokens, passage_text, question_text):
         # if tokens[-1].text.startswith("Ġ"):
         #    text_end -= 1
 
-        if tokens[-1].text == '<unk>':
+        if tokens[-1].text == '[UNK]':
             raise ValueError("UNK appeard in decode_token_spans.")
 
         spans_indices.append((context, text_start, text_end))
