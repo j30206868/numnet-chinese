@@ -5,8 +5,7 @@ import numpy
 import logging
 from time import gmtime, strftime
 from typing import Union, List, Tuple
-from drop_eval import (get_metrics as drop_em_and_f1, answer_json_to_strings)
-
+from drop_eval import get_metrics as drop_em_and_f1, get_metrics_zh as drop_em_and_f1_zh, answer_json_to_strings
 
 def set_environment(seed, set_cuda=False):
     random.seed(seed)
@@ -71,10 +70,11 @@ class DropEmAndF1(object):
     evaluator (which has special handling for numbers and for questions with multiple answer spans,
     among other things).
     """
-    def __init__(self) -> None:
+    def __init__(self, is_eng) -> None:
         self._total_em = 0.0
         self._total_f1 = 0.0
         self._count = 0
+        self._is_eng = is_eng
 
     def __call__(self, prediction: Union[str, List], ground_truths: List):  # type: ignore
         """
@@ -89,8 +89,11 @@ class DropEmAndF1(object):
         # If you wanted to split this out by answer type, you could look at [1] here and group by
         # that, instead of only keeping [0].
         ground_truth_answer_strings = [answer_json_to_strings(annotation)[0] for annotation in ground_truths]
+        metric_func = drop_em_and_f1
+        if not self._is_eng:
+            metric_func = drop_em_and_f1_zh
         exact_match, f1_score = metric_max_over_ground_truths(
-                drop_em_and_f1,
+                metric_func,
                 prediction,
                 ground_truth_answer_strings
         )

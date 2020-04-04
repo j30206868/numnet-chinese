@@ -11,6 +11,8 @@ from tag_mspan_robert_gcn.tag_mspan_roberta_gcn import NumericallyAugmentedBertN
 from datetime import datetime
 from tools.utils import create_logger, set_environment
 from pytorch_transformers import RobertaTokenizer, RobertaModel
+from pytorch_transformers import BertModel
+from pytorch_transformers import AutoTokenizer
 
 
 parser = argparse.ArgumentParser("Bert training task.")
@@ -18,13 +20,20 @@ options.add_bert_args(parser)
 options.add_model_args(parser)
 options.add_data_args(parser)
 options.add_train_args(parser)
+parser.add_argument("--eng", type=int, required=False)
 
 args = parser.parse_args()
 
 if not os.path.exists(args.save_dir):
     os.mkdir(args.save_dir)
 
-tokenizer = RobertaTokenizer.from_pretrained(args.roberta_model)
+if args.eng != 0:
+    tokenizer = RobertaTokenizer.from_pretrained(args.roberta_model)
+else:
+    # import pdb; pdb.set_trace()
+    tokenizer = AutoTokenizer.from_pretrained(args.roberta_model)
+
+# tokenizer = AutoTokenizer.from_pretrained(args.roberta_model)
 
 args.cuda = args.gpu_num > 0
 args_path = os.path.join(args.save_dir, "args.json")
@@ -50,7 +59,10 @@ def main():
     logger.info("Num update steps {}!".format(num_train_steps))
 
     logger.info("Build bert model.")
-    bert_model = RobertaModel.from_pretrained(args.roberta_model)
+    if args.eng == 0:
+        bert_model = BertModel.from_pretrained(args.roberta_model)
+    else:
+        bert_model = RobertaModel.from_pretrained(args.roberta_model)
 
     logger.info("Build Drop model.")
     if not args.tag_mspan:
@@ -64,7 +76,8 @@ def main():
                                               hidden_size=bert_model.config.hidden_size,
                                               dropout_prob=args.dropout,
                                               use_gcn=args.use_gcn,
-                                              gcn_steps=args.gcn_steps)
+                                              gcn_steps=args.gcn_steps,
+                                              is_eng=args.eng)
 
     logger.info("Build optimizer etc...")
     model = DropBertModel(args, network, num_train_step=num_train_steps)

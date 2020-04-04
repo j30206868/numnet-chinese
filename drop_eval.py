@@ -9,7 +9,7 @@ import re
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-
+from chinese_preprocess import normalize_answer_zh
 
 # From here through _normalize_answer was originally copied from:
 # https://worksheets.codalab.org/rest/bundles/0x6b567e1cf2e041ec80d7098f031c5c9e/contents/blob/
@@ -36,7 +36,6 @@ def _tokenize(text: str) -> List[str]:
 
 def _normalize_answer(text: str) -> str:
     """Lower text and remove punctuation, articles and extra whitespace."""
-
     parts = [_white_space_fix(_remove_articles(_normalize_number(_remove_punc(_lower(token)))))
              for token in _tokenize(text)]
     parts = [part for part in parts if part.strip()]
@@ -57,7 +56,7 @@ def _normalize_number(text: str) -> str:
         return text
 
 
-def _answer_to_bags(answer: Union[str, List[str], Tuple[str, ...]]) -> Tuple[List[str], List[Set[str]]]:
+def _answer_to_bags(answer: Union[str, List[str], Tuple[str, ...]], is_eng: bool) -> Tuple[List[str], List[Set[str]]]:
     if isinstance(answer, (list, tuple)):
         raw_spans = answer
     else:
@@ -65,7 +64,10 @@ def _answer_to_bags(answer: Union[str, List[str], Tuple[str, ...]]) -> Tuple[Lis
     normalized_spans: List[str] = []
     token_bags = []
     for raw_span in raw_spans:
-        normalized_span = _normalize_answer(raw_span)
+        if is_eng:
+            normalized_span = _normalize_answer(raw_span)
+        else:
+            normalized_span = normalize_answer_zh(raw_span)
         normalized_spans.append(normalized_span)
         token_bags.append(set(normalized_span.split()))
     return normalized_spans, token_bags
@@ -126,14 +128,30 @@ def get_metrics(predicted: Union[str, List[str], Tuple[str, ...]],
     validation, or while training), this is the function you want to call, after using
     :func:`answer_json_to_strings` when reading the gold answer from the released data file.
     """
-    predicted_bags = _answer_to_bags(predicted)
-    gold_bags = _answer_to_bags(gold)
+    # print(predicted)
+    # if len(predicted) > 10:
+    #     import pdb; pdb.set_trace()
+    predicted_bags = _answer_to_bags(predicted, is_eng=True)
+    gold_bags = _answer_to_bags(gold, is_eng=True)
 
     if set(predicted_bags[0]) == set(gold_bags[0]) and len(predicted_bags[0]) == len(gold_bags[0]):
         exact_match = 1.0
     else:
         exact_match = 0.0
 
+    f1_per_bag = _align_bags(predicted_bags[1], gold_bags[1])
+    f1 = np.mean(f1_per_bag)
+    f1 = round(f1, 2)
+    return exact_match, f1
+
+def get_metrics_zh(predicted: Union[str, List[str], Tuple[str, ...]],
+                gold: Union[str, List[str], Tuple[str, ...]]) -> Tuple[float, float]:
+    predicted_bags = _answer_to_bags(predicted, is_eng=False)
+    gold_bags = _answer_to_bags(gold, is_eng=False)
+    if set(predicted_bags[0]) == set(gold_bags[0]) and len(predicted_bags[0]) == len(gold_bags[0]):
+        exact_match = 1.0
+    else:
+        exact_match = 0.0
     f1_per_bag = _align_bags(predicted_bags[1], gold_bags[1])
     f1 = np.mean(f1_per_bag)
     f1 = round(f1, 2)
@@ -157,7 +175,7 @@ def answer_json_to_strings(answer: Dict[str, Any]) -> Tuple[Tuple[str, ...], str
         raise ValueError(f"Answer type not found, should be one of number, spans or date at: {json.dumps(answer)}")
 
 
-def evaluate_json(annotations: Dict[str, Any], predicted_answers: Dict[str, Any]) -> Tuple[float, float]:
+def evaluate_json(annotations: Dict[str, Any], predicted_answers: Dict[str, Any], is_eng:bool=True) -> Tuple[float, float]:
     """
     Takes gold annotations and predicted answers and  evaluates the predictions for each question
     in the gold annotations.  Both JSON dictionaries must have query_id keys, which are used to
@@ -167,6 +185,10 @@ def evaluate_json(annotations: Dict[str, Any], predicted_answers: Dict[str, Any]
     The ``predicted_answers`` JSON must be a dictionary keyed by query id, where the value is a string
     (or list of strings) that is the answer.
     """
+    if is_eng:
+        metric_func = get_metrics
+    else:
+        metric_func = get_metrics_zh
     instance_exact_match = []
     instance_f1 = []
     # for each type as well
@@ -185,20 +207,21 @@ def evaluate_json(annotations: Dict[str, Any], predicted_answers: Dict[str, Any]
                     candidate_answers += qa_pair["validated_answers"]
                 for answer in candidate_answers:
                     gold_answer, gold_type = answer_json_to_strings(answer)
-                    em_score, f1_score = get_metrics(predicted, gold_answer)
+                    em_score, f1_score = metric_func(predicted, gold_answer)
                     if gold_answer[0].strip() != "":
                         max_em_score = max(max_em_score, em_score)
                         max_f1_score = max(max_f1_score, f1_score)
                         if max_em_score == em_score or max_f1_score == f1_score:
                             max_type = gold_type
             else:
-                print("Missing prediction for question: {}".format(query_id))
-                if qa_pair and qa_pair["answer"]:
-                    max_type = answer_json_to_strings(qa_pair["answer"])[1]
-                else:
-                    max_type = "number"
-                max_em_score = 0.0
-                max_f1_score = 0.0
+                # print("Missing prediction for question: {}".format(query_id))
+                # if qa_pair and qa_pair["answer"]:
+                #     max_type = answer_json_to_strings(qa_pair["answer"])[1]
+                # else:
+                #     max_type = "number"
+                # max_em_score = 0.0
+                # max_f1_score = 0.0
+                continue
             instance_exact_match.append(max_em_score)
             instance_f1.append(max_f1_score)
             type_to_em[max_type].append(max_em_score)
@@ -219,7 +242,8 @@ def evaluate_json(annotations: Dict[str, Any], predicted_answers: Dict[str, Any]
 
 
 def evaluate_prediction_file(prediction_path: str, gold_path: str,
-                             output_path: Optional[str] = None) -> Tuple[float, float]:
+                             output_path: Optional[str] = None,
+                             is_eng: bool = True) -> Tuple[float, float]:
     """
     Takes a prediction file and a gold file and evaluates the predictions for each question in the
     gold file.  Both files must be json formatted and must have query_id keys, which are used to
@@ -231,7 +255,7 @@ def evaluate_prediction_file(prediction_path: str, gold_path: str,
     """
     predicted_answers = json.load(open(prediction_path, encoding='utf-8'))
     annotations = json.load(open(gold_path, encoding='utf-8'))
-    global_em, global_f1 = evaluate_json(annotations, predicted_answers)
+    global_em, global_f1 = evaluate_json(annotations, predicted_answers, is_eng=is_eng)
 
     # Output predictions to file if an output path is given
     if output_path is not None:
@@ -262,6 +286,6 @@ if __name__ == "__main__":
                         required=False,
                         default=None,
                         help='location of the output metrics file')
-
+    parser.add_argument("--eng", type=int, required=True)
     args = parser.parse_args()
-    evaluate_prediction_file(args.prediction_path, args.gold_path, args.output_path)
+    evaluate_prediction_file(args.prediction_path, args.gold_path, args.output_path, is_eng=args.eng)

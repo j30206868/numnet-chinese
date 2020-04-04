@@ -8,6 +8,7 @@ BLR=$3
 WD=$4
 BWD=$5
 TMSPAN=$6
+English=0
 
 BASE_DIR=.
 
@@ -18,7 +19,7 @@ if [ ${TMSPAN} == tag_mspan ];then
   echo "Use tag_mspan model..."
   CACHED_TRAIN=${DATA_DIR}/tmspan_cached_roberta_train.pkl
   CACHED_DEV=${DATA_DIR}/tmspan_cached_roberta_dev.pkl
-  MODEL_CONFIG="--gcn_steps 3 --use_gcn --tag_mspan"
+  MODEL_CONFIG="--gcn_steps 3 --use_gcn --tag_mspan --eng ${English}"
   if [ \( ! -e "${CACHED_TRAIN}" \)  -o \( ! -e "${CACHED_DEV}" \) ]; then
   echo "Preparing cached data."
   python prepare_roberta_data.py --input_path ${DATA_DIR} --output_dir ${DATA_DIR} --tag_mspan

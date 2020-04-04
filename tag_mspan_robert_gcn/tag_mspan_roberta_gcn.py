@@ -96,6 +96,7 @@ class NumericallyAugmentedBertNet(nn.Module):
                  multispan_use_bio_wordpiece_mask: bool = True,
                  dont_add_substrings_to_ms: bool = True,
                  trainning: bool = True,
+                 is_eng: bool = True
                  ) -> None:
         super(NumericallyAugmentedBertNet, self).__init__()
         self.training = trainning
@@ -107,7 +108,7 @@ class NumericallyAugmentedBertNet(nn.Module):
         self.use_gcn = use_gcn
         self.bert = bert
         modeling_out_dim = hidden_size
-        self._drop_metrics = DropEmAndF1()
+        self._drop_metrics = DropEmAndF1(is_eng=is_eng)
         if answering_abilities is None:
             self.answering_abilities = ["passage_span_extraction", "question_span_extraction",
                                         "addition_subtraction", "counting", "multiple_spans"]
@@ -187,7 +188,6 @@ class NumericallyAugmentedBertNet(nn.Module):
                 bio_wordpiece_mask: torch.LongTensor = None,
                 is_bio_mask: torch.LongTensor = None,
                 metadata: List[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
-
         outputs = self.bert(input_ids, attention_mask=input_mask, token_type_ids=input_segments)
         sequence_output = outputs[0]
         sequence_output_list = [ item for item in outputs[2][-4:] ]
@@ -480,6 +480,7 @@ class NumericallyAugmentedBertNet(nn.Module):
                     log_marginal_likelihood_list.append(log_marginal_likelihood_for_multispan)
                 else:
                     raise ValueError(f"Unsupported answering ability: {answering_ability}")
+            
             if len(self.answering_abilities) > 1:
                 # Add the ability probabilities if there are more than one abilities
                 all_log_marginal_likelihoods = torch.stack(log_marginal_likelihood_list, dim=-1)
@@ -487,7 +488,7 @@ class NumericallyAugmentedBertNet(nn.Module):
                 marginal_log_likelihood = util.logsumexp(all_log_marginal_likelihoods)
             else:
                 marginal_log_likelihood = log_marginal_likelihood_list[0]
-            output_dict["loss"] = - marginal_log_likelihood.mean()
+            output_dict["loss"] = - marginal_log_likelihood.mean().cpu().numpy().item(0)
 
         with torch.no_grad():
             best_answer_ability = best_answer_ability.detach().cpu().numpy()
@@ -582,12 +583,16 @@ class NumericallyAugmentedBertNet(nn.Module):
                         predicted_answer = answer_json["value"]
                     else:
                         raise ValueError(f"Unsupported answer ability: {predicted_ability_str}")
-
                     answer_json["predicted_answer"] = predicted_answer
                     output_dict["question_id"].append(metadata[i]["question_id"])
+                    output_dict["passage_id"] = metadata[i]["passage_id"]
                     output_dict["answer"].append(answer_json)
                     answer_annotations = metadata[i].get('answer_annotations', [])
+                    if answer_json["answer_type"] != 'passage_span':
+                        print('type: %s, predicted: %s' % (str(answer_json["answer_type"]), str(predicted_answer)))
+                        print('answer: %s'% (str(answer_annotations)))
                     if answer_annotations:
+                        # debugPDB()
                         self._drop_metrics(predicted_answer, answer_annotations)
 
                     i += 1
